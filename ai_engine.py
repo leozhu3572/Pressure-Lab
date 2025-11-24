@@ -41,7 +41,7 @@ def save_file_locally(file_obj, filename: str, trial_id: int) -> str:
 
 
 async def process_file_to_text(file_path: str, file_type: str) -> str:
-    """Extracts text from PDF or describes Image via GPT-4o."""
+    """Extracts text from PDF or describes Image via GPT-5-mini."""
     filename = os.path.basename(file_path)
 
     if "pdf" in file_type.lower():
@@ -102,7 +102,7 @@ async def batch_generate_initial_arguments(
     INSTRUCTIONS: Argue back logically. Be specific.
     """)
 
-    chain = prompt | ChatOpenAI(model="gpt-4o", temperature=0.6)
+    chain = prompt | ChatOpenAI(model="gpt-5-mini", temperature=0.6)
 
     batch_inputs = [
         {"case_background": case_background, "user_argument": arg}
@@ -157,7 +157,7 @@ async def generate_reply_with_new_evidence(
         messages.append(role(content=msg.content))
     messages.append(HumanMessage(content=user_text))
 
-    llm = ChatOpenAI(model="gpt-4o", temperature=0.6)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0.6)
     response = await llm.ainvoke(messages)
 
     # 4. Background Ingest
