@@ -1,3 +1,4 @@
+import json
 from typing import List
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
@@ -71,26 +72,32 @@ async def create_trial(trial: TrialCreate, db: Session = Depends(database.get_db
 
     # C. Run Parallel Generation for Initial Arguments (The "Action")
     if trial.initial_arguments:
-        # This runs in parallel via LangChain .abatch()
-        ai_responses = await ai_engine.batch_generate_initial_arguments(
+        # returns list of {"content": "...", "sources": [...]}
+        ai_results = await ai_engine.batch_generate_initial_arguments(
             trial_id=db_trial.id,
             case_background=trial.case_background,
             user_arguments=trial.initial_arguments,
         )
 
-        # Save Threads & Messages to DB
-        for user_arg, ai_res in zip(trial.initial_arguments, ai_responses):
-            # 1. Create Thread
+        for user_arg, ai_res in zip(trial.initial_arguments, ai_results):
+            # Create Thread
             thread = models.Thread(trial_id=db_trial.id, title=user_arg[:50])
             db.add(thread)
             db.commit()
             db.refresh(thread)
 
-            # 2. Add User Message
+            # User Message
             db.add(models.Message(thread_id=thread.id, sender="user", content=user_arg))
 
-            # 3. Add AI Response
-            db.add(models.Message(thread_id=thread.id, sender="ai", content=ai_res))
+            # AI Message (WITH SOURCES)
+            db.add(
+                models.Message(
+                    thread_id=thread.id,
+                    sender="ai",
+                    content=ai_res["content"],
+                    sources=json.dumps(ai_res["sources"]),  # Save list as JSON string
+                )
+            )
 
         db.commit()
 
@@ -194,7 +201,7 @@ async def reply_to_thread(
     )
 
     # D. GENERATE AI RESPONSE (Async)
-    ai_res_text = await ai_engine.generate_reply_with_new_evidence(
+    ai_result = await ai_engine.generate_reply_with_new_evidence(
         trial_id=trial_id,
         case_background=trial.case_background,
         user_text=content,
@@ -205,13 +212,20 @@ async def reply_to_thread(
     )
 
     # E. Save AI Response
-    db.add(models.Message(thread_id=thread_id, sender="ai", content=ai_res_text))
+    db.add(
+        models.Message(
+            thread_id=thread_id,
+            sender="ai",
+            content=ai_result["content"],
+            sources=json.dumps(ai_result["sources"]),  # Save sources
+        )
+    )
     db.commit()
 
     return {
         "user_content": content,
-        "ai_response": ai_res_text,
-        "history_used": history_limit,
+        "ai_response": ai_result["content"],
+        "sources": ai_result["sources"],  # Return list to frontend
     }
 
 

@@ -1,3 +1,5 @@
+import json
+
 from sqlalchemy import Column, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
@@ -36,5 +38,10 @@ class Message(Base):
     thread_id = Column(Integer, ForeignKey("threads.id"))
     sender = Column(String)  # "user" or "ai"
     content = Column(Text)
+    sources = Column(Text, default="[]")
 
     thread = relationship("Thread", back_populates="messages")
+
+
+def get_sources_list(self):
+    return json.loads(self.sources) if self.sources else []

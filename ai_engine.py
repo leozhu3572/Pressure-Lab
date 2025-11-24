@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import os
 import shutil
@@ -7,7 +8,6 @@ from langchain.messages import HumanMessage, SystemMessage
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -89,27 +89,90 @@ def ingest_text_evidence(trial_id: int, text: str, source_name: str):
 # =============================================================================
 
 
+async def retrieve_context_and_sources(trial_id: int, query: str):
+    """
+    Performs the Vector Search.
+    Returns:
+        - context_str: String formatted for the LLM
+        - source_list: List of filenames found
+    """
+    vector_store = get_trial_vector_store(trial_id)
+    retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+
+    # Async Search
+    docs = await retriever.ainvoke(query)
+
+    context_str = ""
+    source_list = []
+
+    for doc in docs:
+        source_name = doc.metadata.get("source", "Unknown")
+        # Avoid duplicates in source list
+        if source_name not in source_list:
+            source_list.append(source_name)
+
+        context_str += f"--- [Source: {source_name}] ---\n{doc.page_content}\n\n"
+
+    return context_str, source_list
+
+
+async def _generate_single_argument_with_rag(
+    trial_id: int, case_background: str, user_argument: str
+):
+    """
+    Helper function to run RAG for ONE argument.
+    """
+    # 1. Retrieve specific evidence for this specific argument
+    # (e.g., if argument is about 'Time', get chunks about 'Time')
+    evidence_str, sources = await retrieve_context_and_sources(trial_id, user_argument)
+
+    # 2. Build Prompt
+    system_prompt = f"""
+    You are a skilled AI Prosecutor/Defense Attorney.
+    
+    CASE BACKGROUND:
+    {case_background}
+    
+    SPECIFIC EVIDENCE FOUND:
+    {evidence_str}
+    
+    USER'S ARGUMENT:
+    {user_argument}
+    
+    INSTRUCTIONS:
+    - Argue back logically based on the evidence.
+    - Cite sources using [Source: filename].
+    """
+
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_argument),
+    ]
+
+    # 3. Call LLM
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0.6)
+    response = await llm.ainvoke(messages)
+
+    return {
+        "content": response.content,
+        "sources": sources,  # Return the list of files used
+    }
+
+
 async def batch_generate_initial_arguments(
     trial_id: int, case_background: str, user_arguments: List[str]
-) -> List[str]:
+) -> List[dict]:
     """
-    PARALLEL: Generates responses for multiple starting arguments at once using .abatch()
+    Runs parallel RAG generation.
+    Returns a list of dicts: [{"content": "...", "sources": ["file1.pdf"]}, ...]
     """
-    prompt = ChatPromptTemplate.from_template("""
-    You are a skilled AI Prosecutor/Defense Attorney.
-    CASE BACKGROUND: {case_background}
-    USER'S ARGUMENT: {user_argument}
-    INSTRUCTIONS: Argue back logically. Be specific.
-    """)
+    tasks = []
+    for arg in user_arguments:
+        tasks.append(_generate_single_argument_with_rag(trial_id, case_background, arg))
 
-    chain = prompt | ChatOpenAI(model="gpt-5-mini", temperature=0.6)
-
-    batch_inputs = [
-        {"case_background": case_background, "user_argument": arg}
-        for arg in user_arguments
-    ]
-    results = await chain.abatch(batch_inputs)
-    return [res.content for res in results]
+    # Run all RAG searches and Generations in parallel
+    results = await asyncio.gather(*tasks)
+    return results
 
 
 async def generate_reply_with_new_evidence(
@@ -131,25 +194,22 @@ async def generate_reply_with_new_evidence(
         new_evidence_text = f"\n--- NEWLY UPLOADED EVIDENCE ---\n{raw_text}\n"
 
     # 2. Retrieve Old Evidence
-    vector_store = get_trial_vector_store(trial_id)
-    retriever = vector_store.as_retriever(search_kwargs={"k": 3})
     search_query = f"{user_text} {new_evidence_text[:200]}"
-    old_docs = await retriever.ainvoke(search_query)
-
-    old_evidence_str = "\n".join(
-        [
-            f"[Archived Source: {d.metadata.get('source')}]\n{d.page_content}"
-            for d in old_docs
-        ]
+    old_evidence_str, sources = await retrieve_context_and_sources(
+        trial_id, search_query
     )
+
+    # Add new file to sources list if it exists
+    if new_file_path:
+        sources.append(os.path.basename(new_file_path))
 
     # 3. Generate
     system_prompt = f"""
-    You are a ruthless AI Lawyer.
+    You are a ruthless AI Lawyer and the user is on the opposite side.
     CASE BACKGROUND: {case_background}
     ARCHIVED EVIDENCE: {old_evidence_str}
     {new_evidence_text}
-    INSTRUCTIONS: Reply to user. Check if new evidence contradicts old evidence. Cite sources.
+    INSTRUCTIONS: Argue back to the user. Check if new evidence contradicts old evidence. Cite sources.
     """
 
     messages = [SystemMessage(content=system_prompt)]
@@ -158,7 +218,6 @@ async def generate_reply_with_new_evidence(
     for msg in relevant_history:
         role = HumanMessage if msg.sender == "user" else SystemMessage
         messages.append(role(content=msg.content))
-
     messages.append(HumanMessage(content=user_text))
 
     llm = ChatOpenAI(model="gpt-5-mini", temperature=0.6)

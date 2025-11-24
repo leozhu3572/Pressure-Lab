@@ -26,7 +26,31 @@
 ### Get All Trials
 * **Method:** `GET`
 * **Endpoint:** `/trials/`
-* **Return:** `[ { "id": 1, "title": "...", ... } ]`
+* **Return:** 
+    ```json
+    {
+      "id": 1,
+      "title": "The Cookie Theft",
+      "case_background": "...",
+      "threads": [
+        { 
+          "id": 10, 
+          "title": "I was watching TV", 
+          "messages": [
+            {
+              "sender": "user",
+              "content": "I was watching TV"
+            },
+            {
+              "sender": "ai",
+              "content": "However, the TV logs show it was off...",
+              "sources": ["TV_Logs.pdf", "Case Background"] 
+            }
+          ] 
+        }
+      ]
+    }
+    ```
 
 ### Get Trial Dashboard (Full Details)
 * **Method:** `GET`
@@ -61,16 +85,22 @@
 ### Reply to Thread (with Optional File)
 * **Method:** `POST`
 * **Endpoint:** `/trials/{trial_id}/threads/{thread_id}/reply`
-* **Content-Type:** `multipart/form-data` (Browser handles this automatically)
+* **Content-Type:** `multipart/form-data`
 * **Body (Form Data):**
     * `content`: (Text) "I disagree because..."
     * `file`: (File Object) *Optional PDF or Image*
+    * `history_limit`: (Int) Number of past messages to remember (Default: 4).
 * **Return:**
     ```json
-    {
-      "user_content": "I disagree... [Attached: proof.pdf]",
-      "ai_response": "However, the evidence suggests..."
-    }
+  {
+    "user_content": "I disagree... [Attached: proof.pdf]",
+    "ai_response": "However, looking at the new evidence...",
+    "sources": [
+      "proof.pdf", 
+      "previous_contract.docx", 
+      "Case Background"
+    ]
+  }
     ```
 
 ### Delete Thread
@@ -85,13 +115,14 @@
 ### Edit Message (Prunes Future & Regenerates)
 * **Method:** `PUT`
 * **Endpoint:** `/messages/{message_id}`
-* **Body:** `{ "new_content": "Corrected argument text" }`
+* **Body:** `{ "new_content": "Corrected argument text", "history_limit": 4 }`
 * **Return:**
     ```json
-    {
-      "status": "edited and regenerated",
-      "ai_response": "New counter-argument based on edit..."
-    }
+  {
+    "status": "edited and regenerated",
+    "ai_response": "New counter-argument based on edit...",
+    "sources": ["Case Background", "witness_statement.txt"]
+  }
     ```
 
 ### Delete Evidence File
