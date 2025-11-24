@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+python-dotenv
+python-multipart
+pypdf
+langchain
+langchain-openai
+langchain-chroma
+langchain-community
+chromadb
+openai
+psycopg2-binary 
+gunicorn

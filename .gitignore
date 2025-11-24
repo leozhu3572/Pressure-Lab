@@ -1,0 +1,35 @@
+# --- 1. Security (CRITICAL) ---
+.env
+.env.prod
+.env.local
+.DS_Store
+
+# --- 2. Python & Virtual Environments ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.venv/
+.pytest_cache/
+
+# --- 3. Database (Local SQL) ---
+*.db
+*.sqlite3
+*.sqlite
+
+# --- 4. "Pressure Lab" Specific Data ---
+# Do not commit the Vector Database (it's heavy and changes constantly)
+chroma_db/
+
+# Do not commit user-uploaded evidence files (PDFs/Images)
+uploaded_evidence/
+
+# --- 5. IDE & Editor Settings ---
+.vscode/
+.idea/
+
+# --- 6. Deployment/Build ---
+dist/
+build/
+*.egg-info/
