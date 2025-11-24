@@ -167,6 +167,7 @@ async def reply_to_thread(
     trial_id: int,
     thread_id: int,
     content: str = Form(...),  # Handles Text
+    history_limit: int = Form(4),
     file: UploadFile = File(None),  # Handles Optional PDF/Image
     db: Session = Depends(database.get_db),
 ):
@@ -200,13 +201,18 @@ async def reply_to_thread(
         chat_history=history,
         new_file_path=file_path,
         new_file_type=file_type,
+        history_limit=history_limit,
     )
 
     # E. Save AI Response
     db.add(models.Message(thread_id=thread_id, sender="ai", content=ai_res_text))
     db.commit()
 
-    return {"user_content": msg_content_display, "ai_response": ai_res_text}
+    return {
+        "user_content": content,
+        "ai_response": ai_res_text,
+        "history_used": history_limit,
+    }
 
 
 @app.delete("/threads/{thread_id}")

@@ -119,6 +119,7 @@ async def generate_reply_with_new_evidence(
     chat_history: list,
     new_file_path: Optional[str] = None,
     new_file_type: Optional[str] = None,
+    history_limit: int = 4,
 ) -> str:
     """
     SINGLE REPLY: Handles new evidence upload + RAG retrieval + Response generation.
@@ -152,9 +153,12 @@ async def generate_reply_with_new_evidence(
     """
 
     messages = [SystemMessage(content=system_prompt)]
-    for msg in chat_history[-4:]:
+    relevant_history = chat_history[-history_limit:] if history_limit > 0 else []
+
+    for msg in relevant_history:
         role = HumanMessage if msg.sender == "user" else SystemMessage
         messages.append(role(content=msg.content))
+
     messages.append(HumanMessage(content=user_text))
 
     llm = ChatOpenAI(model="gpt-5-mini", temperature=0.6)
