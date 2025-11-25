@@ -4,7 +4,7 @@ from typing import List
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 import ai_engine
 import database
@@ -124,11 +124,16 @@ def get_trials(db: Session = Depends(database.get_db)):
 @app.get("/trials/{trial_id}")
 def get_trial_details(trial_id: int, db: Session = Depends(database.get_db)):
     """Get full dashboard: Case info + All threads."""
-    trial = db.query(models.Trial).filter(models.Trial.id == trial_id).first()
-    if not trial:
-        raise HTTPException(404, detail="Trial not found")
+    trial = (
+        db.query(models.Trial)
+        .options(joinedload(models.Trial.threads).joinedload(models.Thread.messages))
+        .filter(models.Trial.id == trial_id)
+        .first()
+    )
 
-    # SQLAlchemy relationship loads threads automatically
+    if not trial:
+        raise HTTPException(status_code=404, detail="Trial not found")
+
     return trial
 
 
