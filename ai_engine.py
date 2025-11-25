@@ -8,13 +8,14 @@ from langchain.messages import HumanMessage, SystemMessage
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # --- CONFIG ---
-UPLOAD_DIR = "./uploaded_evidence"
-CHROMA_DB_DIR = "./chroma_db"
-embeddings = OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
+BASE_STORAGE_PATH = os.getenv("STORAGE_PATH", ".")
+
+UPLOAD_DIR = os.path.join(BASE_STORAGE_PATH, "uploaded_evidence")
+CHROMA_DB_DIR = os.path.join(BASE_STORAGE_PATH, "chroma_db")
 
 # =============================================================================
 # 1. DATABASE & FILE UTILITIES
