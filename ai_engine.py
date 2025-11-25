@@ -225,6 +225,7 @@ async def generate_reply_with_new_evidence(
 
     # 4. Background Ingest
     if new_file_path and new_evidence_text:
+        vector_store = get_trial_vector_store(trial_id)
         doc = Document(
             page_content=new_evidence_text,
             metadata={"source": os.path.basename(new_file_path), "trial_id": trial_id},
@@ -232,7 +233,7 @@ async def generate_reply_with_new_evidence(
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
         await vector_store.aadd_documents(splitter.split_documents([doc]))
 
-    return response.content
+    return {"content": response.content, "sources": sources}
 
 
 # =============================================================================
