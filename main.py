@@ -62,8 +62,9 @@ async def create_trial(
     # 1. Parse Arguments (because Form sends them as strings)
     try:
         args_list = json.loads(initial_arguments)
-    except:
-        args_list = []
+    except json.JSONDecodeError as e:
+        # This will return a 400 Error to you instead of creating a broken trial
+        raise HTTPException(status_code=400, detail=f"Bad JSON format: {e}")
 
     # 2. Create SQL Record
     db_trial = models.Trial(title=title, case_background=case_background, user_id=1)
