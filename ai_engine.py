@@ -8,7 +8,7 @@ from langchain.messages import HumanMessage, SystemMessage
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # --- CONFIG ---
@@ -16,6 +16,7 @@ BASE_STORAGE_PATH = os.getenv("STORAGE_PATH", ".")
 
 UPLOAD_DIR = os.path.join(BASE_STORAGE_PATH, "uploaded_evidence")
 CHROMA_DB_DIR = os.path.join(BASE_STORAGE_PATH, "chroma_db")
+embeddings = OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
 
 # =============================================================================
 # 1. DATABASE & FILE UTILITIES
@@ -83,6 +84,49 @@ def ingest_text_evidence(trial_id: int, text: str, source_name: str):
         page_content=text, metadata={"source": source_name, "trial_id": trial_id}
     )
     vector_store.add_documents(splitter.split_documents([doc]))
+
+
+async def ingest_new_file(trial_id: int, file_path: str, file_type: str) -> str:
+    """
+    1. Reads the file (PDF text or Image description).
+    2. Saves it to the Vector Database immediately.
+    3. Returns the text content (so we can use it in a prompt if needed).
+    """
+    vector_store = get_trial_vector_store(trial_id)
+    filename = os.path.basename(file_path)
+
+    # A. Extract Text based on file type
+    text_content = ""
+    if "pdf" in file_type.lower():
+        loader = PyPDFLoader(file_path)
+        pages = loader.load_and_split()
+        text_content = "\n".join([p.page_content for p in pages])
+
+        # Add Metadata and Ingest
+        for page in pages:
+            page.metadata["source"] = filename
+            page.metadata["trial_id"] = trial_id
+
+        # Add to DB
+        if pages:
+            await vector_store.aadd_documents(pages)
+
+    elif "image" in file_type.lower():
+        # Generate description via GPT-4o
+        text_content = await process_file_to_text(
+            file_path, file_type
+        )  # (Reusing your helper)
+
+        # Create Document
+        doc = Document(
+            page_content=text_content,
+            metadata={"source": filename, "trial_id": trial_id, "type": "image"},
+        )
+        # Add to DB
+        await vector_store.aadd_documents([doc])
+
+    print(f"✅ Ingested file: {filename} for Trial {trial_id}")
+    return text_content
 
 
 # =============================================================================
@@ -188,52 +232,85 @@ async def generate_reply_with_new_evidence(
     """
     SINGLE REPLY: Handles new evidence upload + RAG retrieval + Response generation.
     """
-    # 1. Process Immediate New Evidence
+    # --- STEP 1: Process Immediate New Evidence (If any) ---
     new_evidence_text = ""
     if new_file_path:
+        # Convert PDF or Image to text immediately so AI sees it NOW
+        # (Even if it takes a moment to index into the DB later)
         raw_text = await process_file_to_text(new_file_path, new_file_type)
-        new_evidence_text = f"\n--- NEWLY UPLOADED EVIDENCE ---\n{raw_text}\n"
+        new_evidence_text = (
+            f"\n--- NEWLY UPLOADED EVIDENCE (Not yet in DB) ---\n{raw_text}\n"
+        )
 
-    # 2. Retrieve Old Evidence
+    # --- STEP 2: Retrieve Historical Evidence (RAG) ---
+    # We search using the User's text + a snippet of the new file to find relevant old laws/facts
     search_query = f"{user_text} {new_evidence_text[:200]}"
     old_evidence_str, sources = await retrieve_context_and_sources(
         trial_id, search_query
     )
 
-    # Add new file to sources list if it exists
+    # If we have a new file, add it to the sources list manually
+    # (Because it wasn't in the DB during the search step above)
     if new_file_path:
         sources.append(os.path.basename(new_file_path))
 
-    # 3. Generate
+    # --- STEP 3: Construct the System Prompt ---
     system_prompt = f"""
-    You are a ruthless AI Lawyer and the user is on the opposite side.
-    CASE BACKGROUND: {case_background}
-    ARCHIVED EVIDENCE: {old_evidence_str}
+    You are a ruthless AI Lawyer.
+    
+    CASE BACKGROUND:
+    {case_background}
+    
+    ARCHIVED EVIDENCE (From Database):
+    {old_evidence_str}
+    
     {new_evidence_text}
-    INSTRUCTIONS: Argue back to the user. Check if new evidence contradicts old evidence. Cite sources.
+    
+    INSTRUCTIONS:
+    1. Reply to the user's latest argument: "{user_text}"
+    2. If 'NEWLY UPLOADED EVIDENCE' is provided, analyze it immediately.
+    3. Check if the new evidence contradicts the 'ARCHIVED EVIDENCE'.
+    4. You MUST cite your sources using brackets, e.g., [Source: police_report.pdf].
     """
 
     messages = [SystemMessage(content=system_prompt)]
+
+    # --- STEP 4: Handle Chat History (With Limit) ---
+    # Apply the user's requested history limit
     relevant_history = chat_history[-history_limit:] if history_limit > 0 else []
 
     for msg in relevant_history:
         role = HumanMessage if msg.sender == "user" else SystemMessage
         messages.append(role(content=msg.content))
+
+    # Append the current user input
     messages.append(HumanMessage(content=user_text))
 
+    # --- STEP 5: Generate Response ---
     llm = ChatOpenAI(model="gpt-5-mini", temperature=0.6)
     response = await llm.ainvoke(messages)
 
-    # 4. Background Ingest
+    # --- STEP 6: Background Ingest (Save new file to DB) ---
+    # We do this AFTER generating (or async) so the immediate reply is fast,
+    # but the file is saved for the NEXT turn.
     if new_file_path and new_evidence_text:
         vector_store = get_trial_vector_store(trial_id)
+
         doc = Document(
             page_content=new_evidence_text,
-            metadata={"source": os.path.basename(new_file_path), "trial_id": trial_id},
+            metadata={
+                "source": os.path.basename(new_file_path),
+                "trial_id": trial_id,
+                "type": "new_upload",
+            },
         )
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-        await vector_store.aadd_documents(splitter.split_documents([doc]))
+        chunks = splitter.split_documents([doc])
 
+        await vector_store.aadd_documents(chunks)
+        print(f"Ingested {len(chunks)} chunks from new upload into Trial {trial_id}")
+
+    # --- STEP 7: Return Content + Sources ---
     return {"content": response.content, "sources": sources}
 
 

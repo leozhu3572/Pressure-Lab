@@ -48,63 +48,69 @@ class CaseUpdate(BaseModel):
 
 
 @app.post("/trials/")
-async def create_trial(trial: TrialCreate, db: Session = Depends(database.get_db)):
+async def create_trial(
+    title: str = Form(...),
+    case_background: str = Form(...),
+    initial_arguments: str = Form(default="[]"),
+    files: List[UploadFile] = File(default=[]),  # Optional list of files
+    db: Session = Depends(database.get_db),
+):
     """
-    Creates a new trial.
-    If 'initial_arguments' are provided, it runs a BATCH AI generation
-    to create multiple threads instantly.
+    Creates a trial, uploads initial evidence, and generates arguments.
+    NOTE: Input is now multipart/form-data, not raw JSON.
     """
-    # A. Create SQL Record
-    db_trial = models.Trial(
-        title=trial.title,
-        case_background=trial.case_background,
-        user_id=1,  # Hardcoded for prototype
-    )
+    # 1. Parse Arguments (because Form sends them as strings)
+    try:
+        args_list = json.loads(initial_arguments)
+    except:
+        args_list = []
+
+    # 2. Create SQL Record
+    db_trial = models.Trial(title=title, case_background=case_background, user_id=1)
     db.add(db_trial)
     db.commit()
     db.refresh(db_trial)
 
-    # B. Ingest Background to AI (The "Brain" learns the case)
-    # We do this synchronously as it's fast text
-    ai_engine.ingest_text_evidence(
-        db_trial.id, trial.case_background, "Case Background"
-    )
+    # 3. Ingest Background Text
+    ai_engine.ingest_text_evidence(db_trial.id, case_background, "Case Background")
 
-    # C. Run Parallel Generation for Initial Arguments (The "Action")
-    if trial.initial_arguments:
-        # returns list of {"content": "...", "sources": [...]}
+    # 4. PROCESS FILES (If any)
+    # We do this BEFORE generating arguments so the AI knows about these files.
+    for file in files:
+        file_path = ai_engine.save_file_locally(file.file, file.filename, db_trial.id)
+        await ai_engine.ingest_new_file(db_trial.id, file_path, file.content_type)
+
+    # 5. Run Parallel RAG Generation (Now with file knowledge)
+    if args_list:
         ai_results = await ai_engine.batch_generate_initial_arguments(
             trial_id=db_trial.id,
-            case_background=trial.case_background,
-            user_arguments=trial.initial_arguments,
+            case_background=case_background,
+            user_arguments=args_list,
         )
 
-        for user_arg, ai_res in zip(trial.initial_arguments, ai_results):
-            # Create Thread
+        # Save Threads
+        for user_arg, ai_res in zip(args_list, ai_results):
             thread = models.Thread(trial_id=db_trial.id, title=user_arg[:50])
             db.add(thread)
             db.commit()
             db.refresh(thread)
 
-            # User Message
             db.add(models.Message(thread_id=thread.id, sender="user", content=user_arg))
-
-            # AI Message (WITH SOURCES)
             db.add(
                 models.Message(
                     thread_id=thread.id,
                     sender="ai",
                     content=ai_res["content"],
-                    sources=json.dumps(ai_res["sources"]),  # Save list as JSON string
+                    sources=json.dumps(ai_res["sources"]),
                 )
             )
-
         db.commit()
 
     return {
         "trial_id": db_trial.id,
         "status": "created",
-        "threads_generated": len(trial.initial_arguments),
+        "files_uploaded": len(files),
+        "threads_generated": len(args_list),
     }
 
 
@@ -162,6 +168,33 @@ def update_trial_info(
     # Update AI Vectors
     ai_engine.update_case_background_vectors(trial_id, payload.case_background)
     return {"status": "updated"}
+
+
+@app.post("/trials/{trial_id}/evidence")
+async def upload_evidence(
+    trial_id: int,
+    files: List[UploadFile] = File(...),  # Accepts multiple files
+    db: Session = Depends(database.get_db),
+):
+    """
+    Uploads files to a trial without generating arguments.
+    Useful for "bulk uploading" evidence before starting.
+    """
+    trial = db.query(models.Trial).filter(models.Trial.id == trial_id).first()
+    if not trial:
+        raise HTTPException(404, detail="Trial not found")
+
+    ingested_files = []
+
+    for file in files:
+        # 1. Save to Disk
+        file_path = ai_engine.save_file_locally(file.file, file.filename, trial_id)
+
+        # 2. Ingest to Vector DB
+        await ai_engine.ingest_new_file(trial_id, file_path, file.content_type)
+        ingested_files.append(file.filename)
+
+    return {"status": "success", "files_ingested": ingested_files}
 
 
 # =============================================================================
